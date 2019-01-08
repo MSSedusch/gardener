@@ -1158,6 +1158,8 @@ const (
 	DNSOpenstackDesignate DNSProvider = "openstack-designate"
 	// DNSAlicloud is a constant for Alicloud DNS provider
 	DNSAlicloud DNSProvider = "alicloud-dns"
+	// DNSAzure is a constant for 'azure-azuredns' provider
+	DNSAzure DNSProvider = "azure-azuredns"
 )
 
 // CloudProvider is a string alias.

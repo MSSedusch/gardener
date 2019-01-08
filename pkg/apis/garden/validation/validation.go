@@ -49,6 +49,7 @@ func init() {
 		string(garden.DNSGoogleCloudDNS),
 		string(garden.DNSAlicloud),
 		string(garden.DNSOpenstackDesignate),
+		string(garden.DNSAzure),
 	)
 }
 
