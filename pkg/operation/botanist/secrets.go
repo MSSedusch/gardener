@@ -20,6 +20,9 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"os"
+	"runtime"
+	"io/ioutil"
 
 	"github.com/gardener/gardener/pkg/apis/garden"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
@@ -911,6 +914,31 @@ func (b *Botanist) computeAPIServerURL(runsInSeed, useInternalClusterDomain bool
 }
 
 func generateOpenVPNTLSAuth() ([]byte, error) {
+
+	if runtime.GOOS == "windows" {
+		
+		tmpfile, err := ioutil.TempFile("", "gardeneropenvpnsecret")
+		if err != nil {
+			return nil, err
+		}
+		defer os.Remove(tmpfile.Name()) // clean up			
+		if err := tmpfile.Close(); err != nil {
+			return nil, err
+		}
+
+		cmd := exec.Command("openvpn", "--genkey", "--secret", tmpfile.Name())		
+
+		if err := cmd.Run(); err != nil {
+			return nil, err
+		}
+		dat, err := ioutil.ReadFile(tmpfile.Name())
+		if err != nil {
+			return nil, err
+		}
+
+		return dat, nil
+	}
+
 	var (
 		out bytes.Buffer
 		cmd = exec.Command("openvpn", "--genkey", "--secret", "/dev/stdout")

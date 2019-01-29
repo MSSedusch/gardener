@@ -21,6 +21,7 @@ import (
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/operation/cloudbotanist/alicloudbotanist"
 	"github.com/gardener/gardener/pkg/operation/cloudbotanist/awsbotanist"
+	"github.com/gardener/gardener/pkg/operation/cloudbotanist/azurebotanist"
 	"github.com/gardener/gardener/pkg/operation/cloudbotanist/gcpbotanist"
 	"github.com/gardener/gardener/pkg/operation/cloudbotanist/openstackbotanist"
 	"github.com/gardener/gardener/pkg/operation/common"
@@ -138,6 +139,17 @@ func (b *Botanist) DeployDNSRecord(terraformerPurpose, name, target string, purp
 		}
 		chartName = "openstack-designate"
 		config = b.GenerateTerraformDNSConfig(name, hostedZoneID, targetType, []string{target})
+	case gardenv1beta1.DNSAzure:
+		hostedZoneID, err := b.getHostedZoneID(purposeInternalDomain)
+		if err != nil {
+			return err
+		}
+		tfvarsEnvironment, err = b.GenerateTerraformAzureDNSVariablesEnvironment(purposeInternalDomain)
+		if err != nil {
+			return err
+		}
+		chartName = "azure-azuredns"
+		config = b.GenerateTerraformDNSConfig(name, hostedZoneID, targetType, []string{target})
 	default:
 		return nil
 	}
@@ -173,6 +185,11 @@ func (b *Botanist) DestroyDNSRecord(terraformerPurpose string, purposeInternalDo
 		}
 	case gardenv1beta1.DNSAlicloud:
 		tfvarsEnvironment, err = b.GenerateTerraformAlicloudDNSVariablesEnvironment(purposeInternalDomain)
+		if err != nil {
+			return err
+		}
+	case gardenv1beta1.DNSAzure:
+		tfvarsEnvironment, err = b.GenerateTerraformAzureDNSVariablesEnvironment(purposeInternalDomain)
 		if err != nil {
 			return err
 		}
@@ -264,6 +281,22 @@ func (b *Botanist) GenerateTerraformDesignateDNSVariablesEnvironment(purposeInte
 		"OS_PASSWORD":         openstackbotanist.Password,
 	}
 
+	return common.GenerateTerraformVariablesEnvironment(secret, keyValueMap), nil
+}
+
+// GenerateTerraformAzureDNSVariablesEnvironment generates the environment containing the credentials which
+// are required to validate/apply/destroy the Terraform configuration. These environment must contain
+// Terraform variables which are prefixed with TF_VAR_.
+func (b *Botanist) GenerateTerraformAzureDNSVariablesEnvironment(purposeInternalDomain bool) ([]map[string]interface{}, error) {
+	secret, err := b.getDomainCredentials(purposeInternalDomain, azurebotanist.ClientID, azurebotanist.ClientSecret, azurebotanist.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	keyValueMap := map[string]string{
+		"CLIENT_ID":     azurebotanist.ClientID,
+		"CLIENT_SECRET": azurebotanist.ClientSecret,
+		"TENANT_ID": azurebotanist.TenantID,
+	}
 	return common.GenerateTerraformVariablesEnvironment(secret, keyValueMap), nil
 }
 
