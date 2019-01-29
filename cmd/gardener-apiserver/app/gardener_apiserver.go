@@ -20,16 +20,20 @@ import (
 	"io"
 
 	"github.com/gardener/gardener/pkg/api"
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/garden"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/apiserver"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
+	gardencoreclientset "github.com/gardener/gardener/pkg/client/core/clientset/internalversion"
+	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/internalversion"
 	gardenclientset "github.com/gardener/gardener/pkg/client/garden/clientset/internalversion"
 	gardeninformers "github.com/gardener/gardener/pkg/client/garden/informers/internalversion"
 	"github.com/gardener/gardener/pkg/openapi"
 	"github.com/gardener/gardener/pkg/version"
-	deletionconfirmation "github.com/gardener/gardener/plugin/pkg/global/deletionconfirmation"
-	resourcereferencemanager "github.com/gardener/gardener/plugin/pkg/global/resourcereferencemanager"
+	controllerregistrationresources "github.com/gardener/gardener/plugin/pkg/controllerregistration/resources"
+	"github.com/gardener/gardener/plugin/pkg/global/deletionconfirmation"
+	"github.com/gardener/gardener/plugin/pkg/global/resourcereferencemanager"
 	shootdnshostedzone "github.com/gardener/gardener/plugin/pkg/shoot/dnshostedzone"
 	shootquotavalidator "github.com/gardener/gardener/plugin/pkg/shoot/quotavalidator"
 	shootseedmanager "github.com/gardener/gardener/plugin/pkg/shoot/seedmanager"
@@ -84,6 +88,7 @@ These so-called control plane components are hosted in Kubernetes clusters thems
 // Options has all the context and parameters needed to run a Gardener API server.
 type Options struct {
 	Recommended           *genericoptions.RecommendedOptions
+	CoreInformerFactory   gardencoreinformers.SharedInformerFactory
 	GardenInformerFactory gardeninformers.SharedInformerFactory
 	KubeInformerFactory   kubeinformers.SharedInformerFactory
 	StdOut                io.Writer
@@ -93,7 +98,7 @@ type Options struct {
 // NewOptions returns a new Options object.
 func NewOptions(out, errOut io.Writer) *Options {
 	return &Options{
-		Recommended: genericoptions.NewRecommendedOptions(fmt.Sprintf("/registry/%s", garden.GroupName), api.Codecs.LegacyCodec(gardenv1beta1.SchemeGroupVersion)),
+		Recommended: genericoptions.NewRecommendedOptions(fmt.Sprintf("/registry/%s", garden.GroupName), api.Codecs.LegacyCodec(gardencorev1alpha1.SchemeGroupVersion, gardenv1beta1.SchemeGroupVersion), genericoptions.NewProcessInfo("gardener-apiserver", "garden")),
 		StdOut:      out,
 		StdErr:      errOut,
 	}
@@ -121,6 +126,7 @@ func (o *Options) complete() error {
 	shootseedmanager.Register(o.Recommended.Admission.Plugins)
 	shootdnshostedzone.Register(o.Recommended.Admission.Plugins)
 	shootvalidator.Register(o.Recommended.Admission.Plugins)
+	controllerregistrationresources.Register(o.Recommended.Admission.Plugins)
 
 	allOrderedPlugins := []string{
 		resourcereferencemanager.PluginName,
@@ -129,6 +135,7 @@ func (o *Options) complete() error {
 		shootquotavalidator.PluginName,
 		shootseedmanager.PluginName,
 		shootvalidator.PluginName,
+		controllerregistrationresources.PluginName,
 	}
 
 	recommendedPluginOrder := sets.NewString(o.Recommended.Admission.RecommendedPluginOrder...)
@@ -139,8 +146,8 @@ func (o *Options) complete() error {
 }
 
 func (o *Options) config() (*apiserver.Config, error) {
-	// Create clientset for the garden.sapcloud.io API group
-	// Use loopback config to create a new Kubernetes client for the garden.sapcloud.io API group
+	// Create clientset for the owned API groups
+	// Use loopback config to create a new Kubernetes client for the owned API groups
 	gardenerAPIServerConfig := genericapiserver.NewRecommendedConfig(api.Codecs)
 
 	// Create clientset for the native Kubernetes API group
@@ -150,6 +157,7 @@ func (o *Options) config() (*apiserver.Config, error) {
 		return nil, err
 	}
 
+	// kube client
 	kubeClient, err := kubernetes.NewForConfig(kubeAPIServerConfig)
 	if err != nil {
 		return nil, err
@@ -159,13 +167,33 @@ func (o *Options) config() (*apiserver.Config, error) {
 
 	// Initialize admission plugins
 	o.Recommended.ExtraAdmissionInitializers = func(c *genericapiserver.RecommendedConfig) ([]admission.PluginInitializer, error) {
+		// core client
+		coreClient, err := gardencoreclientset.NewForConfig(gardenerAPIServerConfig.LoopbackClientConfig)
+		if err != nil {
+			return nil, err
+		}
+		coreInformerFactory := gardencoreinformers.NewSharedInformerFactory(coreClient, gardenerAPIServerConfig.LoopbackClientConfig.Timeout)
+		o.CoreInformerFactory = coreInformerFactory
+
+		// garden client
 		gardenClient, err := gardenclientset.NewForConfig(gardenerAPIServerConfig.LoopbackClientConfig)
 		if err != nil {
 			return nil, err
 		}
 		gardenInformerFactory := gardeninformers.NewSharedInformerFactory(gardenClient, gardenerAPIServerConfig.LoopbackClientConfig.Timeout)
 		o.GardenInformerFactory = gardenInformerFactory
-		return []admission.PluginInitializer{admissioninitializer.New(gardenInformerFactory, gardenClient, kubeInformerFactory, kubeClient, gardenerAPIServerConfig.Authorization.Authorizer)}, nil
+
+		return []admission.PluginInitializer{
+			admissioninitializer.New(
+				coreInformerFactory,
+				coreClient,
+				gardenInformerFactory,
+				gardenClient,
+				kubeInformerFactory,
+				kubeClient,
+				gardenerAPIServerConfig.Authorization.Authorizer,
+			),
+		}, nil
 	}
 
 	gardenerVersion := version.Get()
@@ -195,11 +223,14 @@ func (o Options) run(stopCh <-chan struct{}) error {
 		return err
 	}
 
-	server.GenericAPIServer.AddPostStartHook("start-gardener-apiserver-informers", func(context genericapiserver.PostStartHookContext) error {
+	if err := server.GenericAPIServer.AddPostStartHook("start-gardener-apiserver-informers", func(context genericapiserver.PostStartHookContext) error {
+		o.CoreInformerFactory.Start(context.StopCh)
 		o.GardenInformerFactory.Start(context.StopCh)
 		o.KubeInformerFactory.Start(context.StopCh)
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
 
 	return server.GenericAPIServer.PrepareRun().Run(stopCh)
 }

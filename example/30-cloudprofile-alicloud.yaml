@@ -11,17 +11,14 @@ spec:
   alicloud:
     constraints:
       dnsProviders:
-      - name: aws-route53
+      - name: alicloud-dns
       - name: unmanaged
       kubernetes:
         versions:
-        - 1.12.3
-        - 1.11.5
-        - 1.10.11
-      # - 1.9.11 # Usage is not recommended, see CVE-2018-1002105
+        - 1.11.6
       machineImages:
       - name: CoreOS
-        id: coreos_1745_7_0_64_30G_alibase_20180705.vhd
+        id: coreos_1911_5_0_64_30G_alibase_20181219.vhd
       machineTypes:
       - name: ecs.sn2ne.large
         cpu: "2"
@@ -57,7 +54,7 @@ spec:
         usable: true
         zones:
         - cn-beijing-f
-      - name: ssd
+      - name: cloud_ssd
         class: premium
         usable: false
         zones:

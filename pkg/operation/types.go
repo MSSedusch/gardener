@@ -24,6 +24,7 @@ import (
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	gardeninformers "github.com/gardener/gardener/pkg/client/garden/informers/externalversions/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/controllermanager/apis/config"
 	"github.com/gardener/gardener/pkg/operation/garden"
 	"github.com/gardener/gardener/pkg/operation/seed"
 	"github.com/gardener/gardener/pkg/operation/shoot"
@@ -46,10 +47,10 @@ type Operation struct {
 	Seed                 *seed.Seed
 	Shoot                *shoot.Shoot
 	ShootedSeed          *helper.ShootedSeed
-	K8sGardenClient      kubernetes.Client
+	K8sGardenClient      kubernetes.Interface
 	K8sGardenInformers   gardeninformers.Interface
-	K8sSeedClient        kubernetes.Client
-	K8sShootClient       kubernetes.Client
+	K8sSeedClient        kubernetes.Interface
+	K8sShootClient       kubernetes.Interface
 	ChartGardenRenderer  chartrenderer.ChartRenderer
 	ChartSeedRenderer    chartrenderer.ChartRenderer
 	ChartShootRenderer   chartrenderer.ChartRenderer
@@ -57,6 +58,7 @@ type Operation struct {
 	APIServerAddress     string
 	SeedNamespaceObject  *corev1.Namespace
 	BackupInfrastructure *gardenv1beta1.BackupInfrastructure
+	ShootBackup          *config.ShootBackup
 	MachineDeployments   MachineDeployments
 	MonitoringClient     prometheusclient.API
 }

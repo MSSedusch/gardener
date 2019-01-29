@@ -96,9 +96,9 @@ spec:
   - type: unmanaged
   kubernetes:
     versions:
+    - 1.12.1
     - 1.11.0
     - 1.10.5
-    - 1.9.8
   machineTypes:
   - name: m4.large
     cpu: "2"
@@ -222,8 +222,6 @@ spec:
     kube-lego:
       enabled: true
       email: john.doe@example.com
-    monocular:
-      enabled: false
 ```
 
 :information: The specifications for the other cloud providers Gardener already has an implementation for looks similar.

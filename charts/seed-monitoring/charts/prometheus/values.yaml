@@ -16,7 +16,7 @@ ingress:
   # admin : admin base64 encoded
   basicAuthSecret: YWRtaW46JGFwcjEkSWRSaVM5c3MkR3U1MHMxaGUwL2Z6Tzh2elE4S1BEMQ==
 
-kubernetesVersion: 1.10.0
+kubernetesVersion: 1.13.1
 
 namespace:
   uid: 100c3bb5-48b9-4f88-96ef-48ed557d4212
@@ -166,6 +166,11 @@ allowedMetrics:
   - prometheus_tsdb_reloads_failures_total
   - prometheus_tsdb_reloads_total
   - prometheus_tsdb_wal_corruptions_total
+  blackboxExporter:
+  - probe_duration_seconds
+  - probe_http_duration_seconds
+  - probe_success
+  - probe_http_status_code
 
 seed:
   apiserver: https://api.foo.bar

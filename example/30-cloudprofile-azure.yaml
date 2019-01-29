@@ -15,16 +15,16 @@ spec:
       - name: unmanaged
       kubernetes:
         versions:
-        - 1.12.3
-        - 1.11.5
-        - 1.10.11
-      # - 1.9.11 # Usage is not recommended, see CVE-2018-1002105
+        - 1.13.2
+        - 1.12.5
+        - 1.11.6
+        - 1.10.12
       machineImages:
       - name: CoreOS
         publisher: CoreOS
         offer: CoreOS
         sku: Stable
-        version: 1745.7.0
+        version: 1911.5.0
       machineTypes:
       - name: Standard_DS2_v2
         cpu: "2"

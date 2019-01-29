@@ -12,11 +12,12 @@ spec:
     matchLabels:
       app: kibana-logging
       role: logging
-  replicas: {{ .Values.kibanaReplicas }}
+  replicas: {{ .Values.kibana.replicaCount }}
   template:
     metadata:
       annotations:
-        checksum/kibana-index-registration-config: {{ include (print $.Template.BasePath "/kibana/kibana-index-registration-config.yaml") . | sha256sum }}
+        checksum/kibana-objects-registration-config: {{ include (print $.Template.BasePath "/kibana/kibana-objects-registration-config.yaml") . | sha256sum }}
+        checksum/kibana-saved-objects-config: {{ include (print $.Template.BasePath "/kibana/kibana-saved-objects-config.yaml") . | sha256sum }}
       labels:
         garden.sapcloud.io/role: logging
         app: kibana-logging
@@ -37,17 +38,30 @@ spec:
         - name: ELASTICSEARCH_URL
           value: http://elasticsearch-logging:{{ .Values.global.elasticsearchPorts.db }}
         ports:
-        - containerPort: {{ .Values.kibanaPort }}
+        - containerPort: {{ .Values.kibana.service.internalPort }}
           name: ui
           protocol: TCP
+{{- if .Values.kibana.readinessProbe.enabled }}
+        readinessProbe:
+          httpGet:
+            path: /api/status
+            port: {{ .Values.kibana.service.internalPort }}
+          initialDelaySeconds: {{ .Values.kibana.readinessProbe.initialDelaySeconds }}
+          timeoutSeconds: {{ .Values.kibana.readinessProbe.timeoutSeconds }}
+          periodSeconds: {{ .Values.kibana.readinessProbe.periodSeconds }}
+          successThreshold: {{ .Values.kibana.readinessProbe.successThreshold }}
+          failureThreshold: {{ .Values.kibana.readinessProbe.failureThreshold }}
+{{- end }}
       - image: {{ index .Values.global.images "kibana-oss" }}
-        name: auto-register-index
+        name: auto-create-objects
         command:
         - /bin/sh
-        - /gardener/register
+        - /gardener/register/register
         volumeMounts:
         - name: register
-          mountPath: /gardener
+          mountPath: /gardener/register
+        - name: saved-objects
+          mountPath: /gardener/saved-objects
         resources:
           limits:
             cpu: 10m
@@ -58,4 +72,7 @@ spec:
       volumes:
       - name: register
         configMap:
-          name: kibana-index-registration
+          name: kibana-object-registration
+      - name: saved-objects
+        configMap:
+          name: kibana-saved-objects

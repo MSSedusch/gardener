@@ -26,8 +26,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	bootstraptokenapi "k8s.io/client-go/tools/bootstrap/token/api"
-	bootstraptokenutil "k8s.io/client-go/tools/bootstrap/token/util"
+	bootstraptokenapi "k8s.io/cluster-bootstrap/token/api"
+	bootstraptokenutil "k8s.io/cluster-bootstrap/token/util"
 )
 
 // generateCloudConfigChart renders the kube-addon-manager configuration for the cloud config user data.
@@ -93,17 +93,19 @@ func (b *HybridBotanist) generateCloudConfigChart() (*chartrenderer.RenderedChar
 			// https://github.com/kubernetes/kubernetes/blob/master/test/e2e/network/dns.go#L44
 			"domain": gardenv1beta1.DefaultDomain,
 			"kubelet": map[string]interface{}{
-				"caCert":           string(b.Secrets["ca-kubelet"].Data[secrets.DataKeyCertificateCA]),
-				"bootstrapToken":   bootstraptokenutil.TokenFromIDAndSecret(string(bootstrapTokenSecretData[bootstraptokenapi.BootstrapTokenIDKey]), string(bootstrapTokenSecretData[bootstraptokenapi.BootstrapTokenSecretKey])),
-				"parameters":       userDataConfig.KubeletParameters,
-				"hostnameOverride": userDataConfig.HostnameOverride,
+				"caCert":             string(b.Secrets["ca-kubelet"].Data[secrets.DataKeyCertificateCA]),
+				"bootstrapToken":     bootstraptokenutil.TokenFromIDAndSecret(string(bootstrapTokenSecretData[bootstraptokenapi.BootstrapTokenIDKey]), string(bootstrapTokenSecretData[bootstraptokenapi.BootstrapTokenSecretKey])),
+				"parameters":         userDataConfig.KubeletParameters,
+				"hostnameOverride":   userDataConfig.HostnameOverride,
+				"enableCSI":          userDataConfig.EnableCSI,
+				"providerIDProvided": userDataConfig.ProviderIDProvided,
 			},
 			"version": b.Shoot.Info.Spec.Kubernetes.Version,
 		},
 		"workers": workers,
 	}
 
-	config, err = b.InjectImages(config, b.ShootVersion(), b.ShootVersion(), common.RubyImageName, common.HyperkubeImageName)
+	config, err = b.InjectImages(config, b.ShootVersion(), b.ShootVersion(), common.RubyImageName, common.HyperkubeImageName, common.PauseContainerImageName)
 	if err != nil {
 		return nil, err
 	}

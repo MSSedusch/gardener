@@ -18,12 +18,15 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	"github.com/gardener/gardener/pkg/apis/garden"
 	gardenv1beta1 "github.com/gardener/gardener/pkg/apis/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/apis/garden/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	gardeninformers "github.com/gardener/gardener/pkg/client/garden/informers/externalversions/garden/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	controllermanagerfeatures "github.com/gardener/gardener/pkg/controllermanager/features"
 	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/operation/certmanagement"
@@ -32,9 +35,9 @@ import (
 	"github.com/gardener/gardener/pkg/utils/imagevector"
 	kutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/secrets"
-
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/util/retry"
@@ -54,7 +57,7 @@ var wantedCertificateAuthorities = map[string]*secrets.CertificateSecretConfig{
 
 // New takes a <k8sGardenClient>, the <k8sGardenInformers> and a <seed> manifest, and creates a new Seed representation.
 // It will add the CloudProfile and identify the cloud provider.
-func New(k8sGardenClient kubernetes.Client, k8sGardenInformers gardeninformers.Interface, seed *gardenv1beta1.Seed) (*Seed, error) {
+func New(k8sGardenClient kubernetes.Interface, k8sGardenInformers gardeninformers.Interface, seed *gardenv1beta1.Seed) (*Seed, error) {
 	secret, err := k8sGardenClient.GetSecret(seed.Spec.SecretRef.Namespace, seed.Spec.SecretRef.Name)
 	if err != nil {
 		return nil, err
@@ -81,7 +84,7 @@ func New(k8sGardenClient kubernetes.Client, k8sGardenInformers gardeninformers.I
 }
 
 // NewFromName creates a new Seed object based on the name of a Seed manifest.
-func NewFromName(k8sGardenClient kubernetes.Client, k8sGardenInformers gardeninformers.Interface, seedName string) (*Seed, error) {
+func NewFromName(k8sGardenClient kubernetes.Interface, k8sGardenInformers gardeninformers.Interface, seedName string) (*Seed, error) {
 	seed, err := k8sGardenInformers.Seeds().Lister().Get(seedName)
 	if err != nil {
 		return nil, err
@@ -90,7 +93,7 @@ func NewFromName(k8sGardenClient kubernetes.Client, k8sGardenInformers gardeninf
 }
 
 // List returns a list of Seed clusters (along with the referenced secrets).
-func List(k8sGardenClient kubernetes.Client, k8sGardenInformers gardeninformers.Interface) ([]*Seed, error) {
+func List(k8sGardenClient kubernetes.Interface, k8sGardenInformers gardeninformers.Interface) ([]*Seed, error) {
 	var seedList []*Seed
 
 	list, err := k8sGardenInformers.Seeds().Lister().List(labels.Everything())
@@ -148,7 +151,7 @@ func generateWantedSecrets(seed *Seed, certificateAuthorities map[string]*secret
 
 // deployCertificates deploys CA and TLS certificates inside the garden namespace
 // It takes a map[string]*corev1.Secret object which contains secrets that have already been deployed inside that namespace to avoid duplication errors.
-func deployCertificates(seed *Seed, k8sSeedClient kubernetes.Client, existingSecretsMap map[string]*corev1.Secret) (map[string]*corev1.Secret, error) {
+func deployCertificates(seed *Seed, k8sSeedClient kubernetes.Interface, existingSecretsMap map[string]*corev1.Secret) (map[string]*corev1.Secret, error) {
 
 	_, certificateAuthorities, err := secrets.GenerateCertificateAuthorities(k8sSeedClient, existingSecretsMap, wantedCertificateAuthorities, common.GardenNamespace)
 	if err != nil {
@@ -164,11 +167,13 @@ func deployCertificates(seed *Seed, k8sSeedClient kubernetes.Client, existingSec
 }
 
 // BootstrapCluster bootstraps a Seed cluster and deploys various required manifests.
-func BootstrapCluster(seed *Seed, k8sGardenClient kubernetes.Client, secrets map[string]*corev1.Secret, imageVector imagevector.ImageVector, numberOfAssociatedShoots int) error {
+func BootstrapCluster(seed *Seed, secrets map[string]*corev1.Secret, imageVector imagevector.ImageVector, numberOfAssociatedShoots int) error {
 	const chartName = "seed-bootstrap"
 	var existingSecretsMap = map[string]*corev1.Secret{}
 
-	k8sSeedClient, err := kubernetes.NewClientFromSecretObject(seed.Secret)
+	k8sSeedClient, err := kubernetes.NewClientFromSecretObject(seed.Secret, client.Options{
+		Scheme: kubernetes.SeedScheme,
+	})
 	if err != nil {
 		return err
 	}
@@ -182,13 +187,13 @@ func BootstrapCluster(seed *Seed, k8sGardenClient kubernetes.Client, secrets map
 		return err
 	}
 
-	if _, err := kutils.TryUpdateNamespace(k8sSeedClient.Clientset(), retry.DefaultBackoff, gardenNamespace.ObjectMeta, func(ns *corev1.Namespace) (*corev1.Namespace, error) {
+	if _, err := kutils.TryUpdateNamespace(k8sSeedClient.Kubernetes(), retry.DefaultBackoff, gardenNamespace.ObjectMeta, func(ns *corev1.Namespace) (*corev1.Namespace, error) {
 		kutils.SetMetaDataLabel(&ns.ObjectMeta, "role", common.GardenNamespace)
 		return ns, nil
 	}); err != nil {
 		return err
 	}
-	if _, err := kutils.TryUpdateNamespace(k8sSeedClient.Clientset(), retry.DefaultBackoff, metav1.ObjectMeta{Name: metav1.NamespaceSystem}, func(ns *corev1.Namespace) (*corev1.Namespace, error) {
+	if _, err := kutils.TryUpdateNamespace(k8sSeedClient.Kubernetes(), retry.DefaultBackoff, metav1.ObjectMeta{Name: metav1.NamespaceSystem}, func(ns *corev1.Namespace) (*corev1.Namespace, error) {
 		kutils.SetMetaDataLabel(&ns.ObjectMeta, "role", metav1.NamespaceSystem)
 		return ns, nil
 	}); err != nil {
@@ -218,8 +223,7 @@ func BootstrapCluster(seed *Seed, k8sGardenClient kubernetes.Client, secrets map
 	var (
 		basicAuth      string
 		kibanaHost     string
-		replicas       int
-		loggingEnabled = features.ControllerFeatureGate.Enabled(features.Logging)
+		loggingEnabled = controllermanagerfeatures.FeatureGate.Enabled(features.Logging)
 	)
 
 	if loggingEnabled {
@@ -243,7 +247,6 @@ func BootstrapCluster(seed *Seed, k8sGardenClient kubernetes.Client, secrets map
 		basicAuth = utils.CreateSHA1Secret(credentials.Data["username"], credentials.Data["password"])
 
 		kibanaHost = seed.GetIngressFQDN("k", "", "garden")
-		replicas = 1
 	} else {
 		if err := common.DeleteLoggingStack(k8sSeedClient, common.GardenNamespace); err != nil && !apierrors.IsNotFound(err) {
 			return err
@@ -253,7 +256,7 @@ func BootstrapCluster(seed *Seed, k8sGardenClient kubernetes.Client, secrets map
 	// Certificate Management feature gate
 	var (
 		clusterIssuer      map[string]interface{}
-		certManagerEnabled = features.ControllerFeatureGate.Enabled(features.CertificateManagement)
+		certManagerEnabled = controllermanagerfeatures.FeatureGate.Enabled(features.CertificateManagement)
 	)
 
 	if certManagerEnabled {
@@ -274,7 +277,9 @@ func BootstrapCluster(seed *Seed, k8sGardenClient kubernetes.Client, secrets map
 
 	// AlertManager configuration
 
-	alertManagerConfig := map[string]interface{}{}
+	alertManagerConfig := map[string]interface{}{
+		"storage": seed.GetValidVolumeSize("1Gi"),
+	}
 	if alertingSMTPKeys := common.GetSecretKeysWithPrefix(common.GardenRoleAlertingSMTP, secrets); len(alertingSMTPKeys) > 0 {
 		emailConfigs := make([]map[string]interface{}, 0, len(alertingSMTPKeys))
 		for _, key := range alertingSMTPKeys {
@@ -313,6 +318,7 @@ func BootstrapCluster(seed *Seed, k8sGardenClient kubernetes.Client, secrets map
 		},
 		"prometheus": map[string]interface{}{
 			"objectCount": nodeCount,
+			"storage":     seed.GetValidVolumeSize("10Gi"),
 		},
 		"elastic-kibana-curator": map[string]interface{}{
 			"enabled": loggingEnabled,
@@ -320,12 +326,11 @@ func BootstrapCluster(seed *Seed, k8sGardenClient kubernetes.Client, secrets map
 				"basicAuthSecret": basicAuth,
 				"host":            kibanaHost,
 			},
-			"kibanaReplicas": replicas,
 			"curator": map[string]interface{}{
-				"objectCount": nodeCount,
+				"objectCount":       nodeCount,
+				"baseDiskThreshold": 2 * 1073741824,
 			},
 			"elasticsearch": map[string]interface{}{
-				"elasticsearchReplicas":     replicas,
 				"objectCount":               nodeCount,
 				"elasticsearchVolumeSizeGB": 100,
 			},
@@ -341,7 +346,7 @@ func BootstrapCluster(seed *Seed, k8sGardenClient kubernetes.Client, secrets map
 	})
 }
 
-func createClusterIssuer(k8sSeedclient kubernetes.Client, certificateManagement *corev1.Secret) (map[string]interface{}, error) {
+func createClusterIssuer(k8sSeedclient kubernetes.Interface, certificateManagement *corev1.Secret) (map[string]interface{}, error) {
 	certManagementConfig, err := certmanagement.RetrieveCertificateManagementConfig(certificateManagement)
 	if err != nil {
 		return nil, err
@@ -464,7 +469,9 @@ func (s *Seed) CheckMinimumK8SVersion() error {
 		minSeedVersion = "1.8" // CRD garbage collection
 	}
 
-	k8sSeedClient, err := kubernetes.NewClientFromSecretObject(s.Secret)
+	k8sSeedClient, err := kubernetes.NewClientFromSecretObject(s.Secret, client.Options{
+		Scheme: kubernetes.SeedScheme,
+	})
 	if err != nil {
 		return err
 	}
@@ -482,4 +489,24 @@ func (s *Seed) CheckMinimumK8SVersion() error {
 // MustReserveExcessCapacity configures whether we have to reserve excess capacity in the Seed cluster.
 func (s *Seed) MustReserveExcessCapacity(must bool) {
 	s.reserveExcessCapacity = must
+}
+
+// GetValidVolumeSize is to get a valid volume size.
+// If the given size is smaller than the minimum volume size permitted by cloud provider on which seed cluster is running, it will return the minimum size.
+func (s *Seed) GetValidVolumeSize(size string) string {
+	if s.Info.Annotations == nil {
+		return size
+	}
+
+	smv, ok := s.Info.Annotations[common.AnnotatePersistentVolumeMinimumSize]
+	if ok {
+		if qmv, err := resource.ParseQuantity(smv); err == nil {
+			qs, err := resource.ParseQuantity(size)
+			if err == nil && qs.Cmp(qmv) < 0 {
+				return smv
+			}
+		}
+	}
+
+	return size
 }

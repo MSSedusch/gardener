@@ -15,11 +15,16 @@
 package botanist
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/gardener/gardener/pkg/client/kubernetes/base"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/util/runtime"
+
 	"github.com/hashicorp/go-multierror"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,7 +33,7 @@ import (
 
 var (
 	exceptions = map[string]map[string]bool{
-		kubernetesbase.CustomResourceDefinitions: map[string]bool{
+		kubernetes.CustomResourceDefinitions: map[string]bool{
 			"felixconfigurations.crd.projectcalico.org":   true,
 			"bgppeers.crd.projectcalico.org":              true,
 			"bgpconfigurations.crd.projectcalico.org":     true,
@@ -39,24 +44,55 @@ var (
 			"networkpolicies.crd.projectcalico.org":       true,
 			"hostendpoints.crd.projectcalico.org":         true,
 		},
-		kubernetesbase.DaemonSets: {
-			fmt.Sprintf("%s/calico-node", metav1.NamespaceSystem): true,
-			fmt.Sprintf("%s/kube-proxy", metav1.NamespaceSystem):  true,
+		kubernetes.DaemonSets: {
+			fmt.Sprintf("%s/calico-node", metav1.NamespaceSystem):              true,
+			fmt.Sprintf("%s/kube-proxy", metav1.NamespaceSystem):               true,
+			fmt.Sprintf("%s/csi-disk-plugin-alicloud", metav1.NamespaceSystem): true,
 		},
-		kubernetesbase.Deployments: {
+		kubernetes.Deployments: {
 			fmt.Sprintf("%s/coredns", metav1.NamespaceSystem):        true,
 			fmt.Sprintf("%s/metrics-server", metav1.NamespaceSystem): true,
+			fmt.Sprintf("%s/csi-attacher", metav1.NamespaceSystem):   true,
 		},
-		kubernetesbase.Namespaces: {
+		kubernetes.StatefulSets: {
+			fmt.Sprintf("%s/csi-provisioner", metav1.NamespaceSystem): true,
+		},
+		kubernetes.Namespaces: {
 			metav1.NamespacePublic:  true,
 			metav1.NamespaceSystem:  true,
 			metav1.NamespaceDefault: true,
 		},
-		kubernetesbase.Services: {
+		kubernetes.Services: {
 			fmt.Sprintf("%s/kubernetes", metav1.NamespaceDefault): true,
 		},
 	}
 )
+
+func excludeAddonManagerManagedListOptions() metav1.ListOptions {
+	selector := labels.NewSelector()
+	req, err := labels.NewRequirement("addonmanager.kubernetes.io/mode", selection.DoesNotExist, nil)
+	runtime.Must(err)
+	selector.Add(*req)
+	return metav1.ListOptions{
+		LabelSelector: selector.String(),
+	}
+}
+
+// CleanWebhooks deletes all Webhooks in the Shoot cluster that are not being managed by the addon manager.
+func (b *Botanist) CleanWebhooks(ctx context.Context) error {
+	var result error
+	admissionRegistration := b.K8sShootClient.Kubernetes().AdmissionregistrationV1beta1()
+
+	if err := admissionRegistration.ValidatingWebhookConfigurations().DeleteCollection(nil, excludeAddonManagerManagedListOptions()); err != nil {
+		result = multierror.Append(result, err)
+	}
+
+	if err := admissionRegistration.MutatingWebhookConfigurations().DeleteCollection(nil, excludeAddonManagerManagedListOptions()); err != nil {
+		result = multierror.Append(result, err)
+	}
+
+	return result
+}
 
 // CleanKubernetesResources deletes all the Kubernetes resources in the Shoot cluster
 // other than those stored in the exceptions map. It will check whether all the Kubernetes resources
@@ -68,11 +104,27 @@ func (b *Botanist) CleanKubernetesResources() error {
 		errors []error
 	)
 
-	if err := b.K8sShootClient.CleanupResources(exceptions); err != nil {
+	// TODO: The following code need to be be refactored if the following bug for CSI is fixed:
+	// Because of the issue of https://github.com/kubernetes-csi/external-provisioner/issues/195 we can't allow
+	// direct deletion of PVs because otherwise the CSI plugin does not get notified and won't delete the PV.
+	// However, we want to wait until all PVs have been deleted. Attention: This won't delete PVs with a
+	// reclaimPolicy != Delete. Those PVs must be deleted manually!
+	var (
+		originalResourceAPIGroups = b.K8sShootClient.GetResourceAPIGroups()
+		modifiedResourceAPIGroups = make(map[string][]string, len(originalResourceAPIGroups))
+	)
+	for resource, apiGroupPath := range originalResourceAPIGroups {
+		modifiedResourceAPIGroups[resource] = apiGroupPath
+	}
+	if b.Shoot.UsesCSI() {
+		delete(modifiedResourceAPIGroups, kubernetes.PersistentVolumes)
+	}
+
+	if err := b.K8sShootClient.CleanupResources(exceptions, modifiedResourceAPIGroups); err != nil {
 		return err
 	}
 
-	for resource, apiGroupPath := range b.K8sShootClient.GetResourceAPIGroups() {
+	for resource, apiGroupPath := range originalResourceAPIGroups {
 		wg.Add(1)
 		go func(apiGroupPath []string, resource string) {
 			defer wg.Done()
@@ -95,7 +147,7 @@ func (b *Botanist) CleanKubernetesResources() error {
 func (b *Botanist) CleanCustomResourceDefinitions() error {
 	var (
 		apiGroups       = b.K8sShootClient.GetResourceAPIGroups()
-		resource        = kubernetesbase.CustomResourceDefinitions
+		resource        = kubernetes.CustomResourceDefinitions
 		crdAPIGroupPath = apiGroups[resource]
 	)
 
@@ -115,7 +167,7 @@ func (b *Botanist) ForceDeleteCustomResourceDefinitions() error {
 
 	var result error
 	for _, crd := range crdList.Items {
-		if omit, ok := exceptions[kubernetesbase.CustomResourceDefinitions][crd.Name]; !ok || !omit {
+		if omit, ok := exceptions[kubernetes.CustomResourceDefinitions][crd.Name]; !ok || !omit {
 			if err := b.K8sShootClient.DeleteCRDForcefully(crd.Name); err != nil && !apierrors.IsNotFound(err) {
 				result = multierror.Append(result, err)
 			}

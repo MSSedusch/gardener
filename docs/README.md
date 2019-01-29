@@ -3,10 +3,12 @@
 ## Development
 
 * [Setting up a local development environment](development/local_setup.md)
-* [Testing and Dependency Management](development/testing_and_dependencies.md)
+* [Unit Testing and Dependency Management](development/testing_and_dependencies.md)
+* [Integration Testing](testing/integration_tests.md)
 * [Features, Releases and Hotfixes](development/process.md)
 * [Repositories of required components](development/repositories.md)
 * [Machine-Controller-Manager integration and Machine bootstrap flow](development/machine-bootstrap.md)
+* [Adding New Cloud Providers](development/new-cloud-provider.md)
 
 ## Deployment
 
